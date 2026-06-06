@@ -47,7 +47,7 @@ func run(args []string, stdout, stderr io.Writer, client *http.Client) int {
 		return 2
 	}
 
-	results := runSequential(client, options)
+	results := runConcurrent(client, options)
 	if _, err := fmt.Fprintln(stdout, results); err != nil {
 		_, _ = fmt.Fprintf(stderr, "write output: %v\n", err)
 		return 1

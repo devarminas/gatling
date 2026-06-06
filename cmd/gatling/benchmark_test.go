@@ -5,7 +5,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestRunSequentialSuccess(t *testing.T) {
@@ -16,7 +18,7 @@ func TestRunSequentialSuccess(t *testing.T) {
 		}, nil
 	})}
 
-	results := runSequential(client, config{requests: 2, url: "http://example.test"})
+	results := runConcurrent(client, config{requests: 2, concurrency: 1, url: "http://example.test"})
 
 	if len(results) != 2 {
 		t.Fatalf("len(results) = %d, want 2", len(results))
@@ -40,7 +42,7 @@ func TestRunSequentialRecordsRequestError(t *testing.T) {
 		return nil, wantErr
 	})}
 
-	results := runSequential(client, config{requests: 1, url: "http://example.test"})
+	results := runConcurrent(client, config{requests: 1, concurrency: 1, url: "http://example.test"})
 
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
@@ -62,7 +64,7 @@ func TestRunSequentialRecordsBodyReadError(t *testing.T) {
 		}, nil
 	})}
 
-	results := runSequential(client, config{requests: 1, url: "http://example.test"})
+	results := runConcurrent(client, config{requests: 1, concurrency: 1, url: "http://example.test"})
 
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
@@ -84,7 +86,7 @@ func TestRunSequentialRecordsBodyCloseError(t *testing.T) {
 		}, nil
 	})}
 
-	results := runSequential(client, config{requests: 1, url: "http://example.test"})
+	results := runConcurrent(client, config{requests: 1, concurrency: 1, url: "http://example.test"})
 
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
@@ -94,6 +96,73 @@ func TestRunSequentialRecordsBodyCloseError(t *testing.T) {
 	}
 	if results[0].statusCode != http.StatusNoContent {
 		t.Fatalf("results[0].statusCode = %d, want %d", results[0].statusCode, http.StatusNoContent)
+	}
+}
+
+func TestRunConcurrentLimitsActiveRequests(t *testing.T) {
+	entered := make(chan struct{}, 6)
+	release := make(chan struct{})
+	errors := make(chan string, 6)
+	var active int32
+	var maxActive int32
+
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		current := atomic.AddInt32(&active, 1)
+		if current > 3 {
+			errors <- "more than 3 active requests"
+		}
+		for {
+			max := atomic.LoadInt32(&maxActive)
+			if current <= max || atomic.CompareAndSwapInt32(&maxActive, max, current) {
+				break
+			}
+		}
+
+		entered <- struct{}{}
+		<-release
+		atomic.AddInt32(&active, -1)
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("response body")),
+		}, nil
+	})}
+
+	done := make(chan []result, 1)
+	go func() {
+		done <- runConcurrent(client, config{requests: 6, concurrency: 3, url: "http://example.test"})
+	}()
+
+	for range 3 {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for 3 active requests")
+		}
+	}
+	close(release)
+
+	var results []result
+	select {
+	case results = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runConcurrent")
+	}
+
+	select {
+	case err := <-errors:
+		t.Fatal(err)
+	default:
+	}
+
+	if len(results) != 6 {
+		t.Fatalf("len(results) = %d, want 6", len(results))
+	}
+	if maxActive > 3 {
+		t.Fatalf("max active requests = %d, want <= 3", maxActive)
+	}
+	if maxActive != 3 {
+		t.Fatalf("max active requests = %d, want 3", maxActive)
 	}
 }
 
