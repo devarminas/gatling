@@ -75,8 +75,11 @@ func TestRunSuccessfulRequest(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run() code = %d, want 0; stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "[{200 ") {
-		t.Fatalf("stdout = %q, want result with status 200", stdout.String())
+	if !strings.Contains(stdout.String(), "Total: 1\nSuccessful: 1\nFailed: 0\n") {
+		t.Fatalf("stdout = %q, want request counts", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Min: ") {
+		t.Fatalf("stdout = %q, want latency stats", stdout.String())
 	}
 	if stderr.String() != "" {
 		t.Fatalf("stderr = %q, want empty", stderr.String())

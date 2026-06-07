@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestRunSequentialSuccess(t *testing.T) {
+func TestRunConcurrentRecordsSuccessfulRequests(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusCreated,
@@ -18,44 +18,40 @@ func TestRunSequentialSuccess(t *testing.T) {
 		}, nil
 	})}
 
-	results := runConcurrent(client, config{requests: 2, concurrency: 1, url: "http://example.test"})
+	summary := runConcurrent(client, config{requests: 2, concurrency: 1, url: "http://example.test"})
+	report := summary.report()
 
-	if len(results) != 2 {
-		t.Fatalf("len(results) = %d, want 2", len(results))
+	if report.Total != 2 {
+		t.Fatalf("report.Total = %d, want 2", report.Total)
 	}
-	for i, got := range results {
-		if got.statusCode != http.StatusCreated {
-			t.Fatalf("results[%d].statusCode = %d, want %d", i, got.statusCode, http.StatusCreated)
-		}
-		if got.err != nil {
-			t.Fatalf("results[%d].err = %v, want nil", i, got.err)
-		}
-		if got.latency <= 0 {
-			t.Fatalf("results[%d].latency = %v, want > 0", i, got.latency)
-		}
+	if report.Successful != 2 {
+		t.Fatalf("report.Successful = %d, want 2", report.Successful)
+	}
+	if report.Failed != 0 {
+		t.Fatalf("report.Failed = %d, want 0", report.Failed)
+	}
+	if report.Min <= 0 {
+		t.Fatalf("report.Min = %v, want > 0", report.Min)
 	}
 }
 
-func TestRunSequentialRecordsRequestError(t *testing.T) {
+func TestRunRequestRecordsRequestError(t *testing.T) {
 	wantErr := errors.New("request failed")
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, wantErr
 	})}
 
-	results := runConcurrent(client, config{requests: 1, concurrency: 1, url: "http://example.test"})
+	result := runRequest(client, config{url: "http://example.test"})
 
-	if len(results) != 1 {
-		t.Fatalf("len(results) = %d, want 1", len(results))
+	if !errors.Is(result.err, wantErr) {
+		t.Fatalf("result.err = %v, want %v", result.err, wantErr)
 	}
-	if !errors.Is(results[0].err, wantErr) {
-		t.Fatalf("results[0].err = %v, want %v", results[0].err, wantErr)
-	}
-	if results[0].statusCode != 0 {
-		t.Fatalf("results[0].statusCode = %d, want 0", results[0].statusCode)
+	if result.statusCode != 0 {
+		t.Fatalf("result.statusCode = %d, want 0", result.statusCode)
 	}
 }
 
-func TestRunSequentialRecordsBodyReadError(t *testing.T) {
+func TestRunRequestRecordsBodyReadError(t *testing.T) {
 	wantErr := errors.New("read failed")
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -64,20 +60,17 @@ func TestRunSequentialRecordsBodyReadError(t *testing.T) {
 		}, nil
 	})}
 
-	results := runConcurrent(client, config{requests: 1, concurrency: 1, url: "http://example.test"})
+	result := runRequest(client, config{url: "http://example.test"})
 
-	if len(results) != 1 {
-		t.Fatalf("len(results) = %d, want 1", len(results))
+	if !errors.Is(result.err, wantErr) {
+		t.Fatalf("result.err = %v, want %v", result.err, wantErr)
 	}
-	if !errors.Is(results[0].err, wantErr) {
-		t.Fatalf("results[0].err = %v, want %v", results[0].err, wantErr)
-	}
-	if results[0].statusCode != http.StatusAccepted {
-		t.Fatalf("results[0].statusCode = %d, want %d", results[0].statusCode, http.StatusAccepted)
+	if result.statusCode != http.StatusAccepted {
+		t.Fatalf("result.statusCode = %d, want %d", result.statusCode, http.StatusAccepted)
 	}
 }
 
-func TestRunSequentialRecordsBodyCloseError(t *testing.T) {
+func TestRunRequestRecordsBodyCloseError(t *testing.T) {
 	wantErr := errors.New("close failed")
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -86,16 +79,13 @@ func TestRunSequentialRecordsBodyCloseError(t *testing.T) {
 		}, nil
 	})}
 
-	results := runConcurrent(client, config{requests: 1, concurrency: 1, url: "http://example.test"})
+	result := runRequest(client, config{url: "http://example.test"})
 
-	if len(results) != 1 {
-		t.Fatalf("len(results) = %d, want 1", len(results))
+	if !errors.Is(result.err, wantErr) {
+		t.Fatalf("result.err = %v, want %v", result.err, wantErr)
 	}
-	if !errors.Is(results[0].err, wantErr) {
-		t.Fatalf("results[0].err = %v, want %v", results[0].err, wantErr)
-	}
-	if results[0].statusCode != http.StatusNoContent {
-		t.Fatalf("results[0].statusCode = %d, want %d", results[0].statusCode, http.StatusNoContent)
+	if result.statusCode != http.StatusNoContent {
+		t.Fatalf("result.statusCode = %d, want %d", result.statusCode, http.StatusNoContent)
 	}
 }
 
@@ -128,7 +118,7 @@ func TestRunConcurrentLimitsActiveRequests(t *testing.T) {
 		}, nil
 	})}
 
-	done := make(chan []result, 1)
+	done := make(chan summary, 1)
 	go func() {
 		done <- runConcurrent(client, config{requests: 6, concurrency: 3, url: "http://example.test"})
 	}()
@@ -142,9 +132,9 @@ func TestRunConcurrentLimitsActiveRequests(t *testing.T) {
 	}
 	close(release)
 
-	var results []result
+	var got summary
 	select {
-	case results = <-done:
+	case got = <-done:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for runConcurrent")
 	}
@@ -155,8 +145,12 @@ func TestRunConcurrentLimitsActiveRequests(t *testing.T) {
 	default:
 	}
 
-	if len(results) != 6 {
-		t.Fatalf("len(results) = %d, want 6", len(results))
+	report := got.report()
+	if report.Total != 6 {
+		t.Fatalf("report.Total = %d, want 6", report.Total)
+	}
+	if report.Successful != 6 {
+		t.Fatalf("report.Successful = %d, want 6", report.Successful)
 	}
 	if maxActive > 3 {
 		t.Fatalf("max active requests = %d, want <= 3", maxActive)

@@ -49,9 +49,9 @@ func runRequest(client *http.Client, cfg config) result {
 	}
 }
 
-func runConcurrent(client *http.Client, cfg config) []result {
-	jobs := make(chan int)
-	results := make([]result, cfg.requests)
+func runConcurrent(client *http.Client, cfg config) summary {
+	resultCh := make(chan result, cfg.requests)
+	requestCh := make(chan struct{})
 	var wg sync.WaitGroup
 
 	for range cfg.concurrency {
@@ -59,17 +59,26 @@ func runConcurrent(client *http.Client, cfg config) []result {
 		go func() {
 			defer wg.Done()
 
-			for job := range jobs {
-				results[job] = runRequest(client, cfg)
+			for range requestCh {
+				resultCh <- runRequest(client, cfg)
 			}
 		}()
 	}
 
-	for job := range cfg.requests {
-		jobs <- job
+	go func() {
+		for range cfg.requests {
+			requestCh <- struct{}{}
+		}
+		close(requestCh)
+	}()
+
+	summary := newSummary()
+	for range cfg.requests {
+		res := <-resultCh
+		summary.add(res)
 	}
-	close(jobs)
+
 	wg.Wait()
 
-	return results
+	return summary
 }
