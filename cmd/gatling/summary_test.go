@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +105,57 @@ func TestSummaryReportCountsNoSuccessfulRequestsWhenAllRequestsFail(t *testing.T
 	}
 }
 
+func TestSummaryReportCountsSuccessfulStatusDistribution(t *testing.T) {
+	summary := newSummary()
+	summary.add(result{statusCode: 200, latency: 100 * time.Millisecond})
+	summary.add(result{statusCode: 201, latency: 100 * time.Millisecond})
+	summary.add(result{statusCode: 200, latency: 100 * time.Millisecond})
+
+	report := summary.report()
+
+	want := []statusCodeCount{
+		{StatusCode: 200, Count: 2},
+		{StatusCode: 201, Count: 1},
+	}
+	if !slices.Equal(report.StatusCodes, want) {
+		t.Fatalf("report.StatusCodes = %#v, want %#v", report.StatusCodes, want)
+	}
+}
+
+func TestSummaryReportCountsFailedHTTPStatusAndError(t *testing.T) {
+	summary := newSummary()
+	summary.add(result{statusCode: 500, err: errors.New("read response body: broken pipe")})
+
+	report := summary.report()
+
+	if report.Failed != 1 {
+		t.Fatalf("report.Failed = %d, want 1", report.Failed)
+	}
+	wantStatusCodes := []statusCodeCount{{StatusCode: 500, Count: 1}}
+	if !slices.Equal(report.StatusCodes, wantStatusCodes) {
+		t.Fatalf("report.StatusCodes = %#v, want %#v", report.StatusCodes, wantStatusCodes)
+	}
+	wantErrors := []errorCount{{Message: "read response body: broken pipe", Count: 1}}
+	if !slices.Equal(report.Errors, wantErrors) {
+		t.Fatalf("report.Errors = %#v, want %#v", report.Errors, wantErrors)
+	}
+}
+
+func TestSummaryReportCountsRequestErrorWithoutStatusOnlyAsError(t *testing.T) {
+	summary := newSummary()
+	summary.add(result{err: errors.New("connection refused")})
+
+	report := summary.report()
+
+	if len(report.StatusCodes) != 0 {
+		t.Fatalf("report.StatusCodes = %#v, want empty", report.StatusCodes)
+	}
+	wantErrors := []errorCount{{Message: "connection refused", Count: 1}}
+	if !slices.Equal(report.Errors, wantErrors) {
+		t.Fatalf("report.Errors = %#v, want %#v", report.Errors, wantErrors)
+	}
+}
+
 func TestSummaryReportWriteToPrintsLatencyStats(t *testing.T) {
 	report := summaryReport{
 		Total:      3,
@@ -133,6 +185,56 @@ func TestSummaryReportWriteToPrintsLatencyStats(t *testing.T) {
 		"P50: 100ms",
 		"P95: 200ms",
 		"P99: 200ms",
+		"",
+	}, "\n")
+	if output.String() != want {
+		t.Fatalf("output = %q, want %q", output.String(), want)
+	}
+}
+
+func TestSummaryReportWriteToPrintsStatusCodesAndErrorsDeterministically(t *testing.T) {
+	report := summaryReport{
+		Total:      5,
+		Successful: 2,
+		Failed:     3,
+		Min:        100 * time.Millisecond,
+		Max:        200 * time.Millisecond,
+		Avg:        150 * time.Millisecond,
+		P50:        100 * time.Millisecond,
+		P95:        200 * time.Millisecond,
+		P99:        200 * time.Millisecond,
+		StatusCodes: []statusCodeCount{
+			{StatusCode: 200, Count: 2},
+			{StatusCode: 500, Count: 1},
+		},
+		Errors: []errorCount{
+			{Message: "connection refused", Count: 2},
+			{Message: "read response body: broken pipe", Count: 1},
+		},
+	}
+	var output bytes.Buffer
+
+	_, err := report.WriteTo(&output)
+
+	if err != nil {
+		t.Fatalf("report.WriteTo() err = %v, want nil", err)
+	}
+	want := strings.Join([]string{
+		"Total: 5",
+		"Successful: 2",
+		"Failed: 3",
+		"Min: 100ms",
+		"Max: 200ms",
+		"Avg: 150ms",
+		"P50: 100ms",
+		"P95: 200ms",
+		"P99: 200ms",
+		"Status Codes:",
+		"  200: 2",
+		"  500: 1",
+		"Errors:",
+		"  connection refused: 2",
+		"  read response body: broken pipe: 1",
 		"",
 	}, "\n")
 	if output.String() != want {
