@@ -86,6 +86,29 @@ func TestRunSuccessfulRequest(t *testing.T) {
 	}
 }
 
+func TestRunParsesDurationMode(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("ok")),
+		}, nil
+	})}
+
+	code := run([]string{"-n", "0", "-z", "25ms", "http://example.test"}, &stdout, &stderr, client)
+
+	if code != 0 {
+		t.Fatalf("run() code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Total: ") || !strings.Contains(stdout.String(), "Failed: 0\n") {
+		t.Fatalf("stdout = %q, want successful report", stdout.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestRunReportsOutputWriteError(t *testing.T) {
 	var stderr bytes.Buffer
 	wantErr := errors.New("stdout failed")

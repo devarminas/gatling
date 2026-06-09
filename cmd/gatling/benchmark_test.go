@@ -160,6 +160,98 @@ func TestRunConcurrentLimitsActiveRequests(t *testing.T) {
 	}
 }
 
+func TestRunConcurrentDurationModeIgnoresRequestCount(t *testing.T) {
+	var requests int32
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		atomic.AddInt32(&requests, 1)
+		time.Sleep(time.Millisecond)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("response body")),
+		}, nil
+	})}
+
+	summary := runConcurrent(client, config{requests: 1, concurrency: 1, duration: 100 * time.Millisecond, url: "http://example.test"})
+	report := summary.report()
+
+	if report.Total <= 1 {
+		t.Fatalf("report.Total = %d, want > 1", report.Total)
+	}
+	if got := int32(report.Total); got != atomic.LoadInt32(&requests) {
+		t.Fatalf("report.Total = %d, requests = %d", got, requests)
+	}
+}
+
+func TestRunConcurrentDurationModeLimitsActiveRequestsAndStops(t *testing.T) {
+	entered := make(chan struct{}, 3)
+	release := make(chan struct{})
+	errors := make(chan string, 3)
+	var active int32
+	var maxActive int32
+
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		current := atomic.AddInt32(&active, 1)
+		if current > 3 {
+			errors <- "more than 3 active requests"
+		}
+		for {
+			max := atomic.LoadInt32(&maxActive)
+			if current <= max || atomic.CompareAndSwapInt32(&maxActive, max, current) {
+				break
+			}
+		}
+
+		entered <- struct{}{}
+		<-release
+		atomic.AddInt32(&active, -1)
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("response body")),
+		}, nil
+	})}
+
+	done := make(chan summary, 1)
+	go func() {
+		done <- runConcurrent(client, config{requests: 1, concurrency: 3, duration: 100 * time.Millisecond, url: "http://example.test"})
+	}()
+
+	for range 3 {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for 3 active requests")
+		}
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	close(release)
+
+	var got summary
+	select {
+	case got = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runConcurrent")
+	}
+
+	select {
+	case err := <-errors:
+		t.Fatal(err)
+	default:
+	}
+
+	report := got.report()
+	if report.Total != 3 {
+		t.Fatalf("report.Total = %d, want 3", report.Total)
+	}
+	if report.Successful != 3 {
+		t.Fatalf("report.Successful = %d, want 3", report.Successful)
+	}
+	if maxActive != 3 {
+		t.Fatalf("max active requests = %d, want 3", maxActive)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

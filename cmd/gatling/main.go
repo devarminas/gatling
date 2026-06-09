@@ -27,6 +27,7 @@ func run(args []string, stdout, stderr io.Writer, client *http.Client) int {
 
 	requests := fs.Int("n", 10, "total number of requests to send")
 	concurrency := fs.Int("c", 1, "how many requests run at the same time")
+	duration := fs.Duration("z", 0, "duration to run requests for")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -41,7 +42,13 @@ func run(args []string, stdout, stderr io.Writer, client *http.Client) int {
 	}
 
 	url := fs.Arg(0)
-	options := config{requests: *requests, concurrency: *concurrency, url: url}
+	durationSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "z" {
+			durationSet = true
+		}
+	})
+	options := config{requests: *requests, concurrency: *concurrency, duration: *duration, durationSet: durationSet, url: url}
 	if err := options.validate(); err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 2

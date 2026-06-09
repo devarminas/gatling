@@ -50,6 +50,13 @@ func runRequest(client *http.Client, cfg config) result {
 }
 
 func runConcurrent(client *http.Client, cfg config) summary {
+	if cfg.duration > 0 {
+		return runConcurrentForDuration(client, cfg)
+	}
+	return runConcurrentForRequests(client, cfg)
+}
+
+func runConcurrentForRequests(client *http.Client, cfg config) summary {
 	resultCh := make(chan result, cfg.requests)
 	requestCh := make(chan struct{})
 	var wg sync.WaitGroup
@@ -79,6 +86,35 @@ func runConcurrent(client *http.Client, cfg config) summary {
 	}
 
 	wg.Wait()
+
+	return summary
+}
+
+func runConcurrentForDuration(client *http.Client, cfg config) summary {
+	resultCh := make(chan result, cfg.concurrency)
+	deadline := time.Now().Add(cfg.duration)
+	var wg sync.WaitGroup
+
+	for range cfg.concurrency {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for time.Now().Before(deadline) {
+				resultCh <- runRequest(client, cfg)
+			}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	summary := newSummary()
+	for res := range resultCh {
+		summary.add(res)
+	}
 
 	return summary
 }
